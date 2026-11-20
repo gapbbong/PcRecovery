@@ -33,6 +33,7 @@ function Backup-Key([string]$regPath) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $file = Join-Path $BackupDir ("{0}-{1}.reg" -f ($regPath -replace '[\\:]', '_'), $stamp)
     & reg.exe export $regPath $file /y 2>&1 | Out-Null
+    Get-ChildItem -Path $BackupDir -Filter '*.reg' | Sort-Object LastWriteTime -Descending | Select-Object -Skip 30 | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
 # $bad = $null 이면 값이 존재하는 것 자체가 차단 요소
@@ -43,6 +44,7 @@ function Remove-Blocker([string]$path, [string]$name, $bad) {
     if ($null -ne $bad -and $val -ne $bad) { return }
     $script:Found++
     if ($script:Apply) {
+        if (-not $script:Backed) { Backup-Key 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'; $script:Backed = $true }
         try { Remove-ItemProperty -Path $path -Name $name -Force -ErrorAction Stop; Log "[복구] $path\$name ($val) 제거" }
         catch { Log "[실패] $path\$name 제거 불가: $_" }
     } else { Log "[발견] $path\$name = $val" }
@@ -85,7 +87,6 @@ function Invoke-Guard {
     if ($domain) {
         Log '[참고] 도메인 가입 PC: 조직 그룹 정책(WSUS/지연/차단)은 변경하지 않습니다.'
     } else {
-        if ($script:Apply -and (Test-Path $wu)) { Backup-Key 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' }
         if (Test-Path $wu) {
             Remove-Blocker $wu 'DisableWindowsUpdateAccess' 1
             Remove-Blocker $wu 'DoNotConnectToWindowsUpdateInternetLocations' 1
