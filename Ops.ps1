@@ -10,7 +10,12 @@ function New-RP([string]$desc) {
     try {
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop
         Set-ItemProperty -Path $k -Name $name -Value 0 -Type DWord -ErrorAction SilentlyContinue
-        Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+        try { Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS -ErrorAction Stop }
+        catch {
+            "직접 생성 실패, SYSTEM 작업으로 재시도: $($_.Exception.Message)"
+            Run-AsSystem 'PcRecovery-RP' ("Checkpoint-Computer -Description '{0}' -RestorePointType MODIFY_SETTINGS" -f $desc) 180
+        }
+        if (-not (Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Where-Object { $_.Description -eq $desc })) { throw '복원 지점이 확인되지 않습니다.' }
         "복원 지점 생성 완료: $desc"
         $global:rpOk = $true
     } catch {
@@ -19,6 +24,17 @@ function New-RP([string]$desc) {
         if ($null -eq $old) { Remove-ItemProperty -Path $k -Name $name -ErrorAction SilentlyContinue }
         else { Set-ItemProperty -Path $k -Name $name -Value $old -Type DWord -ErrorAction SilentlyContinue }
     }
+}
+function Run-AsSystem([string]$name, [string]$command, [int]$timeoutSec = 120) {
+    # 원격 세션에서 막히는 작업(복원 지점, 업데이트 검색)을 SYSTEM 일회성 작업으로 실행
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $enc"
+    $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName $name -Action $a -Principal $p -Force | Out-Null
+    Start-ScheduledTask -TaskName $name
+    $end = (Get-Date).AddSeconds($timeoutSec)
+    do { Start-Sleep -Seconds 2; $st = (Get-ScheduledTask -TaskName $name).State } while ($st -in 'Running', 'Queued' -and (Get-Date) -lt $end)
+    Unregister-ScheduledTask -TaskName $name -Confirm:$false
 }
 function Backup-Registry {
     $dir = Join-Path $env:ProgramData 'PcRecovery\backup'
@@ -85,7 +101,7 @@ $opGuardUninstall = '& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $
 $opScan = @'
 "Windows Update 검색을 요청합니다."
 Start-Service UsoSvc -ErrorAction SilentlyContinue
-Run-Native 'UsoClient.exe' 'StartScan'
+Run-AsSystem 'PcRecovery-Scan' 'UsoClient.exe StartScan' 60
 "백그라운드에서 검색됩니다. 설정 > Windows 업데이트에서 결과를 확인하세요."
 '@
 

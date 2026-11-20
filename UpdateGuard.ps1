@@ -114,12 +114,38 @@ function Invoke-Guard {
         }
     }
 
+    Ensure-Remoting
+
     # 4) hosts 파일로 업데이트 서버를 막아둔 경우 (자동 수정하지 않고 알림만)
     $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
     $blocked = Select-String -Path $hosts -Pattern '^\s*[^#\s]+\s+.*(windowsupdate|update\.microsoft|delivery\.mp\.microsoft)' -ErrorAction SilentlyContinue
     foreach ($b in $blocked) { Log "[경고] hosts 파일에서 업데이트 서버 항목 발견: $($b.Line.Trim()) (직접 확인 필요)" }
 
     Log ("완료: 차단 요소 {0}건 {1}" -f $script:Found, $(if ($script:Apply) { '처리' } else { '발견' }))
+}
+
+# 학생 PC 를 다시 방문하지 않아도 되도록 원격 제어 채널(WinRM)을 자가 복구
+function Ensure-Remoting {
+    $svc = Get-CimInstance Win32_Service -Filter "Name='WinRM'" -ErrorAction SilentlyContinue
+    $problems = @()
+    if (-not $svc -or $svc.StartMode -ne 'Auto' -or $svc.State -ne 'Running') { $problems += 'WinRM 서비스' }
+    $lat = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name LocalAccountTokenFilterPolicy -ErrorAction SilentlyContinue).LocalAccountTokenFilterPolicy
+    if ($lat -ne 1) { $problems += 'LocalAccountTokenFilterPolicy' }
+    $rules = @(Get-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -ErrorAction SilentlyContinue)
+    if ($rules.Count -eq 0 -or @($rules | Where-Object { $_.Enabled -ne 'True' }).Count -gt 0) { $problems += 'WinRM 방화벽 규칙' }
+    if ($problems.Count -eq 0) { return }
+    $script:Found += $problems.Count
+    if (-not $script:Apply) { Log "[발견] 원격 제어 설정 이상: $($problems -join ', ')"; return }
+    try {
+        Set-Service -Name WinRM -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name WinRM -ErrorAction SilentlyContinue
+        if ($rules.Count -eq 0 -or -not (Get-PSSessionConfiguration -Name Microsoft.PowerShell -ErrorAction SilentlyContinue)) {
+            Enable-PSRemoting -Force -SkipNetworkProfileCheck | Out-Null
+        }
+        & reg.exe add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f | Out-Null
+        Get-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' -ErrorAction SilentlyContinue | Enable-NetFirewallRule
+        Log "[복구] 원격 제어 설정 복구: $($problems -join ', ')"
+    } catch { Log "[실패] 원격 제어 설정 복구: $($_.Exception.Message)" }
 }
 
 function Install-Guard {

@@ -67,8 +67,9 @@ function Load-Hosts {
     $grid.Rows.Clear()
     if (-not (Test-Path $HostsCsv)) { Write-Log "hosts.csv 가 없습니다: $HostsCsv"; return }
     foreach ($h in Import-Csv -Path $HostsCsv -Encoding UTF8) {
-        if (-not $h.Address) { continue }
-        $i = $grid.Rows.Add($true, $h.Seat, $h.Name, $h.Address, '-')
+        $addr = if ($h.Address) { $h.Address } else { $h.Name }
+        if (-not $addr) { continue }
+        $i = $grid.Rows.Add($true, $h.Seat, $h.Name, $addr, '-')
         $grid.Rows[$i].Tag = $h.Mac
     }
     Write-Log ("hosts.csv 에서 {0}대를 불러왔습니다." -f $grid.Rows.Count)
@@ -165,6 +166,15 @@ $p = Join-Path $dir 'UpdateGuard.ps1'
 }
 Add-Button '3. 업데이트 지금 복구'   { Start-Remote '업데이트 지금 복구' $opGuardRun @($guardArg) }
 Add-Button '4. 업데이트 검색 시작'   { Start-Remote '업데이트 검색' $opScan @($guardArg) }
+Add-Button '0. 연결 테스트' { Start-Remote '연결 테스트' '"연결 OK: $env:COMPUTERNAME / $((Get-CimInstance Win32_OperatingSystem).Caption)"' @() }
+Add-Button '스크립트 파일 원격 실행...' {
+    # 새 기능을 추가해도 학생 PC 를 방문하지 않도록 임의의 .ps1 을 원격 실행 (param() 대신 $args 사용)
+    $dlg = New-Object System.Windows.Forms.OpenFileDialog
+    $dlg.Filter = 'PowerShell (*.ps1)|*.ps1'
+    if ($dlg.ShowDialog() -ne 'OK') { return }
+    $body = [IO.File]::ReadAllText($dlg.FileName)
+    Start-Remote ('스크립트: ' + [IO.Path]::GetFileName($dlg.FileName)) $body @() ("선택한 PC 에서 다음 스크립트를 실행합니다:`n" + $dlg.FileName)
+}
 Add-Button '5. 복원 지점 + 백업'     { Start-Remote '복원 지점/백업' $opRestore @($guardArg) '선택한 PC 에 복원 지점을 만들고 레지스트리를 백업합니다.' }
 Add-Button '6. 시스템 파일 복구'     { Start-Remote '시스템 파일 복구' $opRepair @($guardArg) '선택한 PC 에서 복원 지점 생성 후 DISM+SFC 를 실행합니다. PC당 수십 분 걸릴 수 있고 인터넷 연결이 필요합니다.' }
 Add-Button '7. 디스크 검사 예약'     { Start-Remote '디스크 검사 예약' $opChkdsk @($guardArg) '선택한 PC 에서 다음 재부팅 때 chkdsk /f /r 를 실행하도록 예약합니다.' }
