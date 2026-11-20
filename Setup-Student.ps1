@@ -2,7 +2,8 @@
 # 학생(실습실) PC 1회 설정 - 이 PC 에 다시 방문하지 않아도 되도록 필요한 것을 한 번에 구성
 #   -TeacherIp 를 생략하면 같은 서브넷(LocalSubnet)에서의 접속을 허용합니다 (교사용 PC IP 가 바뀌어도 재방문 불필요).
 param(
-    [string]$TeacherIp = ''
+    [string]$TeacherIp = '',
+    [string]$StudentUser = ''   # 자동 로그인할 학생 계정 (생략 시 관리자가 아닌 활성 계정이 1개일 때 자동 선택)
 )
 $ErrorActionPreference = 'Continue'
 $results = [ordered]@{}
@@ -37,6 +38,26 @@ Step '원격 Wake-on-LAN/빠른 시작 해제' {
 Step '시스템 보호 켜기 + 설치 시점 복원 지점' {
     Enable-ComputerRestore -Drive "$env:SystemDrive\"
     Checkpoint-Computer -Description 'PcRecovery 설치 시점' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+}
+
+Step '학생 계정 자동 로그인 (바탕화면까지 바로 진입)' {
+    $adminNames = @(Get-LocalGroupMember -SID 'S-1-5-32-544' | ForEach-Object { ($_.Name -split '\\')[-1] })
+    if ($StudentUser) { $u = Get-LocalUser -Name $StudentUser -ErrorAction Stop }
+    else {
+        $cands = @(Get-LocalUser | Where-Object { $_.Enabled -and $adminNames -notcontains $_.Name -and $_.Name -notin 'DefaultAccount', 'Guest', 'WDAGUtilityAccount' })
+        if ($cands.Count -ne 1) { throw "학생 계정을 하나로 정할 수 없습니다 (후보 $($cands.Count)개). -StudentUser 로 지정하세요." }
+        $u = $cands[0]
+    }
+    if ($adminNames -contains $u.Name) { throw "$($u.Name) 은(는) 관리자 권한 계정입니다. 학생 계정은 일반 계정이어야 합니다." }
+    if ($u.PasswordRequired) { throw "$($u.Name) 은(는) 비밀번호가 설정되어 있습니다. 자동 로그인에는 비밀번호가 레지스트리에 평문 저장되므로 비밀번호 없는 학생 계정만 지원합니다." }
+    $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $wl -Name AutoAdminLogon -Value '1' -Type String
+    Set-ItemProperty -Path $wl -Name DefaultUserName -Value $u.Name -Type String
+    Set-ItemProperty -Path $wl -Name DefaultDomainName -Value $env:COMPUTERNAME -Type String
+    Remove-ItemProperty -Path $wl -Name DefaultPassword, AutoLogonCount -ErrorAction SilentlyContinue
+    $pl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
+    if (Test-Path $pl) { Set-ItemProperty -Path $pl -Name DevicePasswordLessBuildVersion -Value 0 -Type DWord }
+    Write-Output "       자동 로그인 계정: $($u.Name)"
 }
 
 Step '업데이트 가드 설치 + 상시 감시' {
